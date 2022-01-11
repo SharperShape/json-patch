@@ -21,6 +21,9 @@ var (
 	// allowing negative indices to mean indices starting at the end of an array.
 	// Default to true.
 	SupportNegativeIndices bool = true
+	// SupportDeleteByValue decides whether to support non-standard practice of
+	// allowing deleting from array by value.
+	SupportDeleteByValue bool = true
 	// AccumulatedCopySizeLimit limits the total size increase in bytes caused by
 	// "copy" operations in a patch.
 	AccumulatedCopySizeLimit int64 = 0
@@ -76,6 +79,9 @@ type ApplyOptions struct {
 	// allowing negative indices to mean indices starting at the end of an array.
 	// Default to true.
 	SupportNegativeIndices bool
+	// SupportDeleteByValue decides whether to support non-standard practice of
+	// allowing deleting from array by value.
+	SupportDeleteByValue bool
 	// AccumulatedCopySizeLimit limits the total size increase in bytes caused by
 	// "copy" operations in a patch.
 	AccumulatedCopySizeLimit int64
@@ -91,6 +97,7 @@ type ApplyOptions struct {
 func NewApplyOptions() *ApplyOptions {
 	return &ApplyOptions{
 		SupportNegativeIndices:   SupportNegativeIndices,
+		SupportDeleteByValue:     SupportDeleteByValue,
 		AccumulatedCopySizeLimit: AccumulatedCopySizeLimit,
 		AllowMissingPathOnRemove: false,
 		EnsurePathExistsOnAdd:    false,
@@ -701,6 +708,19 @@ func (d *partialArray) remove(key string, options *ApplyOptions) error {
 	return nil
 }
 
+func (d *partialArray) removeByValue(key *lazyNode, options *ApplyOptions) error {
+	for i, v := range *d {
+		if key.equal(v) {
+			return d.remove(strconv.Itoa(i), options)
+		}
+	}
+
+	if options.AllowMissingPathOnRemove {
+		return nil
+	}
+	return errors.Wrapf(ErrMissing, "value not found")
+}
+
 func (p Patch) add(doc *container, op Operation, options *ApplyOptions) error {
 	path, err := op.Path()
 	if err != nil {
@@ -872,7 +892,18 @@ func (p Patch) remove(doc *container, op Operation, options *ApplyOptions) error
 		return errors.Wrapf(ErrMissing, "remove operation does not apply: doc is missing path: \"%s\"", path)
 	}
 
-	err = con.remove(key, options)
+	if key == "-" && options.SupportDeleteByValue {
+		value := op.value()
+		switch v := con.(type) {
+		case *partialArray:
+			err = v.removeByValue(value, options)
+		default:
+			return errors.Wrapf(ErrMissing, "remove operation does not apply: not an array: \"%s\"", path)
+		}
+	} else {
+		err = con.remove(key, options)
+	}
+
 	if err != nil {
 		return errors.Wrapf(err, "error in remove for path: '%s'", path)
 	}
